@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -32,6 +32,10 @@ export function PriceSettingsCard({
   const [editPrompt, setEditPrompt] = useState('');
   const [editCompletion, setEditCompletion] = useState('');
   const [editCache, setEditCache] = useState('');
+
+  // Import/Export state
+  const [importError, setImportError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const handleSavePrice = () => {
     if (!selectedModel) return;
@@ -82,6 +86,62 @@ export function PriceSettingsCard({
       setCompletionPrice('');
       setCachePrice('');
     }
+  };
+
+  const handleExportPrices = () => {
+    const json = JSON.stringify(modelPrices, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `model-prices-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportPrices = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target?.result as string);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          setImportError(t('usage_stats.price_import_invalid'));
+          return;
+        }
+        // Skip entries that are not valid price objects; normalize valid ones
+        const normalized: Record<string, ModelPrice> = {};
+        for (const [model, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (!model.trim()) continue;
+          if (
+            typeof v !== 'object' ||
+            v === null ||
+            typeof (v as Record<string, unknown>).prompt !== 'number' ||
+            typeof (v as Record<string, unknown>).completion !== 'number'
+          ) {
+            continue; // silently skip non-price entries (e.g. _comment)
+          }
+          const price = v as Record<string, unknown>;
+          normalized[model] = {
+            prompt: Number(price.prompt) || 0,
+            completion: Number(price.completion) || 0,
+            cache: typeof price.cache === 'number' ? price.cache : Number(price.prompt) || 0,
+          };
+        }
+        if (Object.keys(normalized).length === 0) {
+          setImportError(t('usage_stats.price_import_invalid'));
+          return;
+        }
+        onPricesChange({ ...modelPrices, ...normalized });
+        setImportError(null);
+      } catch {
+        setImportError(t('usage_stats.price_import_invalid'));
+      }
+    };
+    reader.readAsText(file);
+    // Reset so same file can be re-imported
+    e.target.value = '';
   };
 
   const options = useMemo(
@@ -145,7 +205,34 @@ export function PriceSettingsCard({
 
         {/* Saved Prices List */}
         <div className={styles.pricesList}>
-          <h4 className={styles.pricesTitle}>{t('usage_stats.saved_prices')}</h4>
+          <div className={styles.pricesTitleRow}>
+            <h4 className={styles.pricesTitle}>{t('usage_stats.saved_prices')}</h4>
+            <div className={styles.priceImportExport}>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: 'none' }}
+                onChange={handleImportPrices}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => importInputRef.current?.click()}
+              >
+                {t('usage_stats.price_import')}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleExportPrices}
+                disabled={Object.keys(modelPrices).length === 0}
+              >
+                {t('usage_stats.price_export')}
+              </Button>
+            </div>
+          </div>
+          {importError && <div className={styles.priceImportError}>{importError}</div>}
           {Object.keys(modelPrices).length > 0 ? (
             <div className={styles.pricesGrid}>
               {Object.entries(modelPrices).map(([model, price]) => (
